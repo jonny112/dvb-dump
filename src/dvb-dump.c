@@ -1,7 +1,8 @@
 
 #include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
 #include <fcntl.h>
-#include <poll.h>
 #include <string.h>
 #include <stdint.h>
 #include <sys/ioctl.h>
@@ -10,8 +11,8 @@
 #include <linux/dvb/dmx.h>
 
 int main(int argc, char **argv) {
-    int fe, dmx, dvr, freq, srate;
-    char sys, pol, band, pat, pos;
+    int n, fe, dmx, dvr, freq, srate, pids[16];
+    char sys, pol, band, pat, pos, fec, mod;
     uint16_t tsval;
     struct dvb_frontend_info fe_inf;
     struct dtv_properties props;
@@ -20,9 +21,9 @@ int main(int argc, char **argv) {
     fe_status_t fe_stat;
     char buff[1316];
    
-    fprintf(stderr, "DVB-Dump v0.0.1\n");
-    if (argc < 5) {
-        fprintf(stderr, "Usage: dvb-dump <system> <pol/band> <freq> <rate>\n");
+    fprintf(stderr, "DVB-Dump v0.1.2\n");
+    if (argc < 7) {
+        fprintf(stderr, "Usage: dvb-dump <system> <pol/band> <freq> <rate> <FEC> <modulation> [<PIDs>..16]\n");
         return 1;
     }
     
@@ -42,9 +43,11 @@ int main(int argc, char **argv) {
     
     freq = atoi(argv[3]);
     srate = atoi(argv[4]);
-        
+    fec = atoi(argv[5]);
+    mod = atoi(argv[6]);
+    
     // open files
-    if ((fe = open("/dev/dvb/adapter0/frontend0", O_RDWR)) < 0) {
+    if ((fe = open("/dev/dvb/card0/frontend0", O_RDWR)) < 0) {
         perror("Failed to open frontend");
         return 1;
     }
@@ -52,12 +55,12 @@ int main(int argc, char **argv) {
     ioctl(fe, FE_GET_INFO, &fe_inf);
     fprintf(stderr, "Tuner: %s (0x%08X)\n", fe_inf.name, fe_inf.caps);
     
-    if ((dmx = open("/dev/dvb/adapter0/demux0", O_RDWR)) < 0) {
+    if ((dmx = open("/dev/dvb/card0/demux0", O_RDWR)) < 0) {
         perror("Failed to open demuxer");
         return 1;
     }
     
-    if ((dvr = open("/dev/dvb/adapter0/dvr0", O_RDONLY)) < 0) {
+    if ((dvr = open("/dev/dvb/card0/dvr0", O_RDONLY)) < 0) {
         perror("Failed to open dvr");
         return 1;
     }
@@ -70,11 +73,16 @@ int main(int argc, char **argv) {
     if (band > -1) fprintf(stderr, ", %s", (band == SEC_TONE_ON ? "high-band" : "low-band"));
     fprintf(stderr, "\n");
     
+    props.num = 1;
+    props.props = &prop;
+        
+    prop.cmd = DTV_CLEAR;
+    prop.u.data = sys;
+    ioctl(fe, FE_SET_PROPERTY, &props);    
+    
     if (sys > -1) {
         prop.cmd = DTV_DELIVERY_SYSTEM;
         prop.u.data = sys;
-        props.num = 1;
-        props.props = &prop;
         ioctl(fe, FE_SET_PROPERTY, &props);
     }
     
@@ -82,17 +90,21 @@ int main(int argc, char **argv) {
     if (band > -1) ioctl(fe, FE_SET_TONE, band);
     
     struct dtv_property tune_props[] = {
-	{ .cmd = DTV_CLEAR },
         { .cmd = DTV_FREQUENCY, .u.data = freq },
+        { .cmd = DTV_INVERSION, .u.data = INVERSION_AUTO },
         { .cmd = DTV_SYMBOL_RATE, .u.data = srate * 1000 },
+        { .cmd = DTV_INNER_FEC, .u.data = fec },
+        { .cmd = DTV_MODULATION, .u.data = mod },
+        { .cmd = DTV_PILOT, .u.data = PILOT_AUTO },
+        { .cmd = DTV_ROLLOFF, .u.data = ROLLOFF_AUTO },
         { .cmd = DTV_TUNE }
     };
-    props.num = 4;
+    props.num = 8;
     props.props = tune_props;
     ioctl(fe, FE_SET_PROPERTY, &props);
     
     fprintf(stderr, "Waiting for lock...\n");
-    sleep(1);
+    sleep(3);
     
     // tuner status
     ioctl(fe, FE_READ_STATUS, &fe_stat);
@@ -100,9 +112,10 @@ int main(int argc, char **argv) {
     if (! (fe_stat & FE_HAS_LOCK)) return 1;
     
     // demux
-    fprintf(stderr, "Demuxing all PIDs\n");
+    fprintf(stderr, "Demuxing PID 0\n");
     memset(&flt, 0, sizeof(flt));
-    flt.pid = 0x2000;
+    flt.pid = 0;
+    flt.pes_type = DMX_PES_OTHER;
     flt.input = DMX_IN_FRONTEND;
     flt.output = DMX_OUT_TS_TAP;
     flt.flags = DMX_IMMEDIATE_START;
@@ -130,6 +143,26 @@ int main(int argc, char **argv) {
             
             write(1, buff, 188);
             pat = 1;
+        }
+    }
+    
+    for (n = 0; n < 16 && (n + 7) < argc; n++) {
+        memset(&flt, 0, sizeof(flt));
+        flt.pid = strtol(argv[n + 7], NULL, 0);
+        flt.pes_type = DMX_PES_OTHER;
+        flt.input = DMX_IN_FRONTEND;
+        flt.output = DMX_OUT_TS_TAP;
+        flt.flags = DMX_IMMEDIATE_START;
+        fprintf(stderr, "Demuxing PID 0x%04X (%d)\n", flt.pid, flt.pid);
+        
+        if ((pids[n] = open("/dev/dvb/card0/demux0", O_RDWR)) < 0) {
+            perror("Failed to open demuxer");
+            return 1;
+        }
+        
+        if (ioctl(pids[n], DMX_SET_PES_FILTER, &flt) < 0) {
+            perror("Failed to setup demuxer");
+            return 1;
         }
     }
     
