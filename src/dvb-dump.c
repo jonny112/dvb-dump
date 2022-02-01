@@ -1,4 +1,4 @@
-// 
+ 
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -26,7 +26,7 @@ __asm__(".symver fprintf,fprintf@GLIBC_2.2");
 
 int main(int argc, char **argv) {
     int n, fe, dmx, dvr, freq, srate, pids[16];
-    char pol, band, pat, pos, fec, mod;
+    char pol, band, pat, pos, fec, mod, rolloff;
     uint16_t tsval, snr, strength;
     uint32_t ber;
     struct dvb_frontend_info fe_inf;
@@ -41,10 +41,18 @@ int main(int argc, char **argv) {
     int dmx_buffer_frames = 16732;
     char *buff;
     
-    fprintf(stderr, "DVB-Dump v0.2.3\n");
+    fprintf(stderr, "DVB-Dump v0.3.0\n");
     if (argc < 7) {
-        fprintf(stderr, "\nUsage: dvb-dump <system> <polarisation/band[/option/positon]> <frequency> <rate/bandwidth> <FEC> <modulation> [<PIDs>..16]\n\nValid systems are S, S2, and T.\nFrequencies for satellites in kHz, others in Hz.\nPolarisation can be VL, VH, HL, HH, or - for none. DiSEqC option and position can be A or B.\nFEC_AUTO: 9, QPSK: 0, QAM_AUTO: 6\nUp to 16 PIDs may be specified for demuxing. PID 0 is always demuxed and 0x2000 will grab the entire stream, if supported.\n");
-        fprintf(stderr, "\nEnvironment parameters:\nDVB_FRONTEND: frontend device (default: %s)\nDVB_DEMUX: demux device (default: %s)\nDVB_DVR: streaming device (default: %s)\nDVB_BUFFER_FRAMES: size of the stream buffer in frames (default: %d)\nDVB_DEMUX_BUFFER_FRAMES: size of the demux buffer in frames (default: %d)\n\n", DEFAULT_FRONTEND, DEFAULT_DEMUX, DEFAULT_DVR, buffer_frames, dmx_buffer_frames);
+        fprintf(stderr, "\nUsage: dvb-dump <system> <polarisation/band[/option/positon]> <frequency> <rate/bandwidth> <FEC> <modulation> <roll-off> [<PIDs>..16]\n\nValid systems are S, S2, and T.\nPolarisation can be VL, VH, HL, HH, or - for none. DiSEqC option and position can be A or B.\nFrequencies for satellites in kHz (950-2150MHz, LO: 9750MHz for L, 10600MHz for H), terrestrial in Hz.\nUp to 16 PIDs may be specified for demuxing. PID 0 is always demuxed and 0x2000 will grab the entire stream, if supported.\n\n");
+        
+        fprintf(stderr, "fe_code_rate:  FEC_NONE=%d, FEC_1_2=%d, FEC_2_3=%d, FEC_3_4=%d, FEC_4_5=%d, FEC_5_6=%d, FEC_6_7=%d, FEC_7_8=%d, FEC_8_9=%d,\n               FEC_AUTO=%d, FEC_3_5=%d, FEC_9_10=%d, FEC_2_5=%d\n\n", FEC_NONE, FEC_1_2, FEC_2_3, FEC_3_4, FEC_4_5, FEC_5_6, FEC_6_7, FEC_7_8, FEC_8_9, FEC_AUTO, FEC_3_5, FEC_9_10, FEC_2_5);
+        
+        fprintf(stderr, "fe_modulation: QPSK=%d, QAM_16=%d, QAM_32=%d, QAM_64=%d, QAM_128=%d, QAM_256=%d, QAM_AUTO=%d, VSB_8=%d, VSB_16=%d, PSK_8=%d,\n               APSK_16=%d, APSK_32=%d, DQPSK=%d, QAM_4_NR=%d\n\n", QPSK, QAM_16, QAM_32, QAM_64, QAM_128, QAM_256, QAM_AUTO, VSB_8, VSB_16, PSK_8, APSK_16, APSK_32, DQPSK, QAM_4_NR);
+        
+        fprintf(stderr, "fe_rolloff:    ROLLOFF_35=%d, ROLLOFF_20=%d, ROLLOFF_25=%d, ROLLOFF_AUTO=%d\n\n", ROLLOFF_35, ROLLOFF_20, ROLLOFF_25, ROLLOFF_AUTO);
+        
+        fprintf(stderr, "Environment parameters:\nDVB_FRONTEND: frontend device (default: %s)\nDVB_DEMUX: demux device (default: %s)\nDVB_DVR: streaming device (default: %s)\nDVB_BUFFER_FRAMES: size of the stream buffer in frames (default: %d)\nDVB_DEMUX_BUFFER_FRAMES: size of the demux buffer in frames (default: %d)\n\n", DEFAULT_FRONTEND, DEFAULT_DEMUX, DEFAULT_DVR, buffer_frames, dmx_buffer_frames);
+        
         return 1;
     }
     
@@ -72,10 +80,11 @@ int main(int argc, char **argv) {
         srate = atoi(argv[4]);
         fec = atoi(argv[5]);
         mod = atoi(argv[6]);
+        rolloff = atoi(argv[7]);
         
         // open files
-            perror("Failed to open frontend");
         if ((fe = open(getenv("DVB_FRONTEND") == NULL ? DEFAULT_FRONTEND : getenv("DVB_FRONTEND"), O_RDWR)) < 0) {
+            perror("Failed to open frontend");
             return 1;
         }
         
@@ -137,7 +146,7 @@ int main(int argc, char **argv) {
                     { .cmd = DTV_INNER_FEC, .u.data = fec },
                     { .cmd = DTV_MODULATION, .u.data = mod },
                     { .cmd = DTV_PILOT, .u.data = PILOT_AUTO },
-                    { .cmd = DTV_ROLLOFF, .u.data = ROLLOFF_AUTO },
+                    { .cmd = DTV_ROLLOFF, .u.data = rolloff },
                     { .cmd = DTV_TUNE }
                 };
                 props.num = 10;
@@ -181,7 +190,7 @@ int main(int argc, char **argv) {
             if (ioctl(fe, FE_READ_BER, &ber) < 0) perror("FE_READ_BER");
             fprintf(stderr, "Tuner status is 0x%02X (%s)  Signal: %.1f%% (%d)  SNR: %.1f%% (%d)  BER: %d\n", fe_stat, (fe_stat & FE_HAS_LOCK ? "OK" : "FAILED"), (float)strength / 0xFFFF * 100, strength, (float)snr / 0xFFFF * 100, snr, ber);
             usleep(200000);
-        } while (argc > 7 && argv[7][0] == '-');
+        } while (argc > 8 && argv[8][0] == '-');
         if (! (fe_stat & FE_HAS_LOCK)) return 1;
     }
     
@@ -248,9 +257,9 @@ int main(int argc, char **argv) {
         }
     }
     
-    for (n = 0; n < 16 && (n + 7) < argc; n++) {
+    for (n = 0; n < 16 && (n + 8) < argc; n++) {
         memset(&flt, 0, sizeof(flt));
-        flt.pid = strtol(argv[n + 7], NULL, 0);
+        flt.pid = strtol(argv[n + 8], NULL, 0);
         flt.pes_type = DMX_PES_OTHER;
         flt.input = DMX_IN_FRONTEND;
         flt.output = DMX_OUT_TS_TAP;
